@@ -1,0 +1,5 @@
+{
+  "name": "SOVIETSKAYA ZHELEZNAYA DOROGA",
+  "description": "An interactive Three.js experience simulating a view from a train window traveling through a post-Soviet industrial landscape.",
+  "requestFramePermissions": []
+}
