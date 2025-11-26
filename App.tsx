@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import PostSovietTrainView from './components/PostSovietTrainView';
 
 export type TimeOfDay = 'day' | 'night';
-export type Weather = 'clear' | 'cloudy' | 'rain';
+export type Weather = 'clear' | 'cloudy' | 'rain' | 'snow';
 
 const App: React.FC = () => {
   const [isOverlayVisible, setIsOverlayVisible] = useState(true);
@@ -48,7 +48,7 @@ const App: React.FC = () => {
       const newTime = times[Math.floor(Math.random() * times.length)];
       
       // Random Weather
-      const weathers: Weather[] = ['clear', 'cloudy', 'rain'];
+      const weathers: Weather[] = ['clear', 'cloudy', 'rain', 'snow'];
       const newWeather = weathers[Math.floor(Math.random() * weathers.length)];
 
       setTimeOfDay(newTime);
@@ -66,7 +66,7 @@ const App: React.FC = () => {
 
   const cycleWeather = () => {
     setIsAutoMode(false);
-    const states: Weather[] = ['clear', 'cloudy', 'rain'];
+    const states: Weather[] = ['clear', 'cloudy', 'rain', 'snow'];
     const nextIndex = (states.indexOf(weather) + 1) % states.length;
     setWeather(states[nextIndex]);
   };
@@ -76,6 +76,7 @@ const App: React.FC = () => {
         case 'clear': return 'YASNO';
         case 'cloudy': return 'OBLACHNO';
         case 'rain': return 'DOZHD';
+        case 'snow': return 'SNEG';
     }
   };
 

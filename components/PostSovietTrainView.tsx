@@ -31,7 +31,6 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
   const radioStaticGainRef = useRef<GainNode | null>(null);
   const radioMusicGainRef = useRef<GainNode | null>(null);
   const radioFilterRef = useRef<BiquadFilterNode | null>(null);
-  const radioOscillators = useRef<any[]>([]); // Track oscillators to stop them
   const sequencerInterval = useRef<any>(null);
 
   // Scene Refs for dynamic updates
@@ -40,9 +39,11 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
   const dirLightRef = useRef<THREE.DirectionalLight | null>(null);
   const interiorLightRef = useRef<THREE.PointLight | null>(null);
   const rainSystemRef = useRef<THREE.Points | null>(null);
+  const snowSystemRef = useRef<THREE.Points | null>(null); // NEW: Snow
   const starsRef = useRef<THREE.Points | null>(null);
   const streetLightsRef = useRef<THREE.PointLight[]>([]);
   const wiperPivotRef = useRef<THREE.Group | null>(null);
+  const peopleRef = useRef<THREE.Group[]>([]); // NEW: People
 
   // Refs for Animation Loop (Fixes stale closures)
   const weatherRef = useRef<Weather>(weather);
@@ -58,6 +59,7 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
 
     const isNight = timeOfDay === 'night';
     const isRain = weather === 'rain';
+    const isSnow = weather === 'snow';
     const isCloudy = weather === 'cloudy';
 
     // 1. Fog & Background Color
@@ -66,12 +68,20 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
 
     if (isNight) {
         fogColor.setHex(0x05070a); // Deep dark night
-        fogDensity = isRain ? 0.04 : 0.015;
+        if (isSnow) {
+            fogColor.setHex(0x1a1c22); // Night Snow (slightly brighter due to snow reflection)
+            fogDensity = 0.035;
+        } else {
+            fogDensity = isRain ? 0.04 : 0.015;
+        }
     } else {
         // Day
         if (isRain) {
             fogColor.setHex(0x556677); // Grey Rain
             fogDensity = 0.05;
+        } else if (isSnow) {
+            fogColor.setHex(0xccdde5); // White/Grey Snow Mist
+            fogDensity = 0.04;
         } else if (isCloudy) {
             fogColor.setHex(0x778899); // Cloudy
             fogDensity = 0.03;
@@ -86,25 +96,30 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
         sceneRef.current.fog = new THREE.FogExp2(fogColor, fogDensity);
     }
 
-    // 2. Rain Visibility
+    // 2. Rain/Snow Visibility
     if (rainSystemRef.current) {
         rainSystemRef.current.visible = isRain;
+    }
+    if (snowSystemRef.current) {
+        snowSystemRef.current.visible = isSnow;
     }
 
     // 3. Stars Visibility (Night + Clear only)
     if (starsRef.current) {
-        starsRef.current.visible = isNight && !isRain && !isCloudy;
+        starsRef.current.visible = isNight && !isRain && !isCloudy && !isSnow;
     }
 
     // 4. Lighting Intensity
     // Ambient
     if (ambientLightRef.current) {
-        ambientLightRef.current.intensity = isNight ? 0.1 : (isRain ? 0.3 : 0.5);
+        // Snow reflects more light
+        const snowBoost = isSnow ? 0.2 : 0;
+        ambientLightRef.current.intensity = (isNight ? 0.1 : (isRain ? 0.3 : 0.5)) + snowBoost;
     }
     // Directional (Sun/Moon)
     if (dirLightRef.current) {
-        dirLightRef.current.intensity = isNight ? 0.1 : (isRain ? 0.2 : 0.8);
-        dirLightRef.current.color.setHex(isNight ? 0x88aaff : 0xffddaa);
+        dirLightRef.current.intensity = isNight ? 0.1 : (isRain || isSnow ? 0.2 : 0.8);
+        dirLightRef.current.color.setHex(isNight ? 0x88aaff : (isSnow ? 0xddeeff : 0xffddaa));
     }
     // Interior Light (Warmer and brighter at night)
     if (interiorLightRef.current) {
@@ -114,6 +129,26 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
     // Street Lights (On at night)
     streetLightsRef.current.forEach(light => {
         light.intensity = isNight ? 2.0 : 0;
+    });
+
+    // 5. Snow Accumulation (Dynamic Materials)
+    sceneRef.current.traverse((obj) => {
+        // Toggle Snow Caps
+        if (obj.name === 'snowCap') {
+            obj.visible = isSnow;
+        }
+        // Change Ground Color
+        if (obj.name === 'ground') {
+            const mesh = obj as THREE.Mesh;
+            const mat = mesh.material as THREE.MeshStandardMaterial;
+            if (isSnow) {
+                mat.color.setHex(0xdddddd); // Snowy ground
+                mat.roughness = 0.6;
+            } else {
+                mat.color.setHex(0x383a38); // Standard dirt/concrete
+                mat.roughness = 1.0;
+            }
+        }
     });
 
   }, [timeOfDay, weather]);
@@ -693,6 +728,43 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
     scene.add(rainSystem);
     rainSystemRef.current = rainSystem;
 
+    // --- Snow System ---
+    const snowCount = 2000;
+    const snowGeo = new THREE.BufferGeometry();
+    const snowPos = new Float32Array(snowCount * 3);
+    for(let i=0; i<snowCount; i++) {
+        snowPos[i*3] = (Math.random() - 0.5) * 15;
+        snowPos[i*3+1] = Math.random() * 8;
+        snowPos[i*3+2] = -2 - Math.random() * 8;
+    }
+    snowGeo.setAttribute('position', new THREE.BufferAttribute(snowPos, 3));
+    const snowMat = new THREE.PointsMaterial({
+        color: 0xffffff,
+        size: 0.04,
+        transparent: true,
+        opacity: 0.8,
+        map: (() => {
+            // Simple circle texture for soft snow
+            const canvas = document.createElement('canvas');
+            canvas.width = 32;
+            canvas.height = 32;
+            const context = canvas.getContext('2d');
+            if(context) {
+                context.fillStyle = 'white';
+                context.beginPath();
+                context.arc(16, 16, 14, 0, Math.PI * 2);
+                context.fill();
+            }
+            const tex = new THREE.CanvasTexture(canvas);
+            return tex;
+        })(),
+        sizeAttenuation: true
+    });
+    const snowSystem = new THREE.Points(snowGeo, snowMat);
+    snowSystem.visible = false;
+    scene.add(snowSystem);
+    snowSystemRef.current = snowSystem;
+
     // --- Stars System (For Clear Nights) ---
     const starCount = 400;
     const starGeo = new THREE.BufferGeometry();
@@ -704,8 +776,7 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
       starPos[i*3+2] = -50 - Math.random() * 100;
     }
     starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
-    const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.3, transparent: true, opacity: 0.8, sizeAttenuation: true });
-    const stars = new THREE.Points(starGeo, starMat);
+    const stars = new THREE.Points(new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(starPos, 3)), new THREE.PointsMaterial({ color: 0xffffff, size: 0.3, transparent: true, opacity: 0.8, sizeAttenuation: true }));
     stars.visible = false;
     scene.add(stars);
     starsRef.current = stars;
@@ -721,6 +792,7 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
       roughness: 1.0,
     });
     const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.name = 'ground';
     ground.rotation.x = -Math.PI / 2;
     ground.position.set(0, -0.1, -60);
     world.add(ground);
@@ -754,6 +826,7 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
     // --- Object Generation ---
     const movingObjects: THREE.Object3D[] = [];
     streetLightsRef.current = []; // Reset tracked lights
+    peopleRef.current = []; // Reset people
 
     const panelColors = [0x70757a, 0x676d72, 0x585c60, 0x6c6f77, 0x7e8380];
     const graffitiColors = [0x884444, 0x448844, 0x444488, 0xccccaa, 0x222222];
@@ -774,6 +847,15 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
       const mesh = new THREE.Mesh(geo, mat);
       mesh.position.y = height / 2;
       group.add(mesh);
+
+      // Snow Cap (Hidden by default)
+      const capGeo = new THREE.BoxGeometry(width + 0.1, 0.05, depth + 0.1);
+      const capMat = new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 1 });
+      const cap = new THREE.Mesh(capGeo, capMat);
+      cap.position.y = height + 0.025;
+      cap.name = 'snowCap';
+      cap.visible = false;
+      group.add(cap);
 
       const numPatches = Math.floor(Math.random() * 4);
       for(let k=0; k<numPatches; k++) {
@@ -802,6 +884,16 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
       const base = new THREE.Mesh(baseGeo, baseMat);
       base.position.y = baseHeight / 2;
       group.add(base);
+
+       // Snow Cap for factory
+      const capGeo = new THREE.BoxGeometry(baseWidth + 0.1, 0.05, 2.1);
+      const capMat = new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 1 });
+      const cap = new THREE.Mesh(capGeo, capMat);
+      cap.position.y = baseHeight + 0.025;
+      cap.name = 'snowCap';
+      cap.visible = false;
+      group.add(cap);
+
 
       const pipeHeight = 4.0 + Math.random() * 3.0;
       const pipeGeo = new THREE.CylinderGeometry(0.2, 0.3, pipeHeight, 12);
@@ -888,6 +980,41 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
         movingObjects.push(group);
     }
 
+    // NEW: Person
+    function createPerson(x: number, z: number) {
+        const group = new THREE.Group();
+        const height = 1.7 + Math.random() * 0.1;
+        
+        // Coat
+        const bodyGeo = new THREE.CylinderGeometry(0.25, 0.3, height * 0.7, 8);
+        const bodyMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.9 });
+        const body = new THREE.Mesh(bodyGeo, bodyMat);
+        body.position.y = (height * 0.7) / 2;
+        group.add(body);
+
+        // Head
+        const headGeo = new THREE.SphereGeometry(0.15, 8, 8);
+        const headMat = new THREE.MeshStandardMaterial({ color: 0xdcb498, roughness: 0.5 });
+        const head = new THREE.Mesh(headGeo, headMat);
+        head.position.y = (height * 0.7) + 0.15;
+        group.add(head);
+
+        // Ushanka Hat
+        const hatGeo = new THREE.BoxGeometry(0.35, 0.25, 0.35);
+        const hatMat = new THREE.MeshStandardMaterial({ color: 0x332211, roughness: 1.0 });
+        const hat = new THREE.Mesh(hatGeo, hatMat);
+        hat.position.y = (height * 0.7) + 0.28;
+        group.add(hat);
+
+        group.position.set(x, 0, z);
+        // Random rotation
+        group.rotation.y = Math.random() * Math.PI * 2;
+        
+        world.add(group);
+        movingObjects.push(group);
+        peopleRef.current.push(group);
+    }
+
     // --- Population Loop ---
     const totalObjects = 40;
     const spacing = 4;
@@ -900,6 +1027,12 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
       createPanelHouse(leftX, z - 1 + Math.random() * 2);
       createPanelHouse(rightX, z + Math.random() * 2);
 
+      // Add a person near some houses
+      if (Math.random() > 0.7) {
+          const px = leftX + (Math.random() > 0.5 ? 1.5 : -1.5);
+          createPerson(px, z + Math.random());
+      }
+
       if (i % 6 === 0) {
         const fx = Math.random() > 0.5 ? -14 - Math.random() * 5 : 14 + Math.random() * 5;
         createFactory(fx, z - 2);
@@ -908,6 +1041,10 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
       if (i % 8 === 0) {
         const lightX = Math.random() > 0.5 ? -3 : 3;
         createStreetLight(lightX, z);
+        // Maybe a person waiting near the light
+        if (Math.random() > 0.6) {
+             createPerson(lightX + (Math.random()-0.5), z);
+        }
       }
       if (Math.random() > 0.3) {
          const tx = (Math.random() > 0.5 ? -1 : 1) * (5 + Math.random() * 10);
@@ -957,7 +1094,7 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
           for(let i=0; i<rainCount; i++) {
               // Y moves down
               positions[i*3+1] -= 20 * delta; // Fall speed
-              // X moves slightly against train movement or random wind
+              // X moves slightly against train movement
               positions[i*3] -= 4 * delta; 
               
               if (positions[i*3+1] < -2) {
@@ -967,6 +1104,35 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
           }
           rainSystemRef.current.geometry.attributes.position.needsUpdate = true;
       }
+
+      // Animate Snow (Slower, drifting)
+      if (snowSystemRef.current && snowSystemRef.current.visible) {
+          const positions = snowSystemRef.current.geometry.attributes.position.array as Float32Array;
+          for(let i=0; i<snowCount; i++) {
+              // Y moves down slowly
+              positions[i*3+1] -= 2.5 * delta; 
+              // X drifts with sine wave + train movement illusion
+              positions[i*3] -= (2.0 * delta) + Math.sin(t + positions[i*3+1]) * 0.01;
+              // Z drift (into or out of screen)
+              positions[i*3+2] += Math.cos(t * 0.5 + i) * 0.01;
+
+              if (positions[i*3+1] < -2) {
+                  positions[i*3+1] = 8;
+                  positions[i*3] = (Math.random() - 0.5) * 15; 
+              }
+          }
+          snowSystemRef.current.geometry.attributes.position.needsUpdate = true;
+      }
+
+      // Animate People (Idle)
+      peopleRef.current.forEach((person, idx) => {
+          // Subtle breathing/shivering
+          const shiver = Math.sin(t * 10 + idx) * 0.005;
+          const breathe = Math.sin(t * 2 + idx) * 0.02;
+          person.scale.set(1 + shiver, 1 + breathe, 1 + shiver);
+          person.rotation.z = Math.sin(t + idx) * 0.05; // sway
+      });
+
 
       // Animate Wiper
       if (wiperPivotRef.current) {
