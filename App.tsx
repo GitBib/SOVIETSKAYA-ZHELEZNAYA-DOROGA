@@ -13,6 +13,11 @@ const App: React.FC = () => {
   const [timeOfDay, setTimeOfDay] = useState<TimeOfDay>('night');
   const [weather, setWeather] = useState<Weather>('clear');
 
+  // Radio State
+  const [isRadioOn, setIsRadioOn] = useState(false);
+  const [radioFreq, setRadioFreq] = useState(94.5); // Start off-station
+  const [radioVol, setRadioVol] = useState(0.5);
+
   // Trip Data (Generated "Robot" Data)
   const [dayCount, setDayCount] = useState(() => Math.floor(Math.random() * 200) + 14);
   const [sector, setSector] = useState(() => Math.floor(Math.random() * 20) + 1);
@@ -78,6 +83,23 @@ const App: React.FC = () => {
       return t === 'day' ? 'DEN' : 'NOCH';
   };
 
+  // Calculate simulated signal strength based on known stations
+  // Stations at 96.0 and 104.5
+  const getSignalStrength = (freq: number) => {
+      const stations = [96.0, 104.5];
+      let maxStrength = 0;
+      stations.forEach(station => {
+          const dist = Math.abs(freq - station);
+          if (dist < 1.5) {
+              const strength = 1 - (dist / 1.5);
+              if (strength > maxStrength) maxStrength = strength;
+          }
+      });
+      return maxStrength;
+  };
+
+  const signalStrength = getSignalStrength(radioFreq);
+
   return (
     <div className="relative w-full h-screen bg-neutral-900 text-white overflow-hidden font-mono">
       {/* 3D Scene Background */}
@@ -86,6 +108,9 @@ const App: React.FC = () => {
           audioEnabled={isAudioEnabled} 
           timeOfDay={timeOfDay}
           weather={weather}
+          radioOn={isRadioOn}
+          radioFreq={radioFreq}
+          radioVol={radioVol}
         />
       </div>
 
@@ -113,6 +138,79 @@ const App: React.FC = () => {
              <span>VREMYA: {getTranslitTime(timeOfDay)}</span>
           </div>
         </div>
+
+        {/* Radio Module UI */}
+        <div className="absolute bottom-6 left-6 pointer-events-auto p-4 bg-black/80 backdrop-blur-md border border-gray-600 w-64 shadow-2xl">
+           <div className="flex justify-between items-center mb-2">
+             <span className="text-amber-500/90 text-xs tracking-widest font-bold">RADIO_PRIEMNIK</span>
+             <button 
+               onClick={() => setIsRadioOn(!isRadioOn)}
+               className={`w-3 h-3 rounded-full border border-gray-500 ${isRadioOn ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.8)]' : 'bg-red-900'}`}
+             />
+           </div>
+           
+           {/* Frequency Display */}
+           <div className="bg-[#1a221a] border border-gray-700 p-2 mb-3 relative overflow-hidden h-10 flex items-center justify-center">
+             <div className={`text-xl font-digital tracking-widest transition-opacity duration-200 ${isRadioOn ? 'text-green-400 opacity-90' : 'text-green-900 opacity-20'}`} style={{ fontFamily: 'monospace' }}>
+               {radioFreq.toFixed(1)} <span className="text-xs">MHZ</span>
+             </div>
+             {/* Static overlay effect */}
+             {isRadioOn && signalStrength < 0.8 && (
+                <div className="absolute inset-0 bg-noise opacity-20 pointer-events-none mix-blend-overlay"></div>
+             )}
+           </div>
+
+           {/* Signal Strength */}
+           <div className="flex items-center gap-1 mb-3 h-2">
+             <span className="text-[9px] text-gray-500 w-6">SIG:</span>
+             <div className="flex-1 flex gap-[2px] h-full">
+               {[...Array(10)].map((_, i) => (
+                 <div 
+                    key={i} 
+                    className={`flex-1 transition-all duration-300 ${isRadioOn && i / 10 < signalStrength ? 'bg-amber-500' : 'bg-gray-800'}`}
+                 />
+               ))}
+             </div>
+           </div>
+
+           {/* Controls */}
+           <div className="space-y-3">
+             <div className="flex flex-col gap-1">
+               <label className="text-[9px] text-gray-400 uppercase tracking-widest flex justify-between">
+                 <span>Chastota (Tuning)</span>
+               </label>
+               <input 
+                 type="range" 
+                 min="88.0" 
+                 max="108.0" 
+                 step="0.1" 
+                 value={radioFreq}
+                 onChange={(e) => setRadioFreq(parseFloat(e.target.value))}
+                 className="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-amber-500"
+               />
+               <div className="flex justify-between text-[8px] text-gray-600 font-mono">
+                 <span>88</span>
+                 <span>96</span>
+                 <span>104</span>
+                 <span>108</span>
+               </div>
+             </div>
+
+             <div className="flex flex-col gap-1">
+               <label className="text-[9px] text-gray-400 uppercase tracking-widest">Gromkost (Vol)</label>
+               <input 
+                 type="range" 
+                 min="0" 
+                 max="1" 
+                 step="0.05" 
+                 value={radioVol}
+                 onChange={(e) => setRadioVol(parseFloat(e.target.value))}
+                 className="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-amber-500"
+               />
+             </div>
+           </div>
+        </div>
+
       </div>
 
       {/* Controls Container */}

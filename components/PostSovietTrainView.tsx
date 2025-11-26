@@ -6,15 +6,33 @@ interface PostSovietTrainViewProps {
   audioEnabled: boolean;
   timeOfDay: TimeOfDay;
   weather: Weather;
+  radioOn: boolean;
+  radioFreq: number;
+  radioVol: number;
 }
 
-const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({ audioEnabled, timeOfDay, weather }) => {
+const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({ 
+    audioEnabled, 
+    timeOfDay, 
+    weather,
+    radioOn,
+    radioFreq,
+    radioVol
+}) => {
   const containerRef = useRef<HTMLDivElement>(null);
   
   // Audio Refs
   const audioCtxRef = useRef<AudioContext | null>(null);
   const masterGainRef = useRef<GainNode | null>(null);
   const rainGainRef = useRef<GainNode | null>(null);
+  
+  // Radio Audio Refs
+  const radioMasterGainRef = useRef<GainNode | null>(null);
+  const radioStaticGainRef = useRef<GainNode | null>(null);
+  const radioMusicGainRef = useRef<GainNode | null>(null);
+  const radioFilterRef = useRef<BiquadFilterNode | null>(null);
+  const radioOscillators = useRef<any[]>([]); // Track oscillators to stop them
+  const sequencerInterval = useRef<any>(null);
 
   // Scene Refs for dynamic updates
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -100,7 +118,7 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({ audioEnabled,
 
   }, [timeOfDay, weather]);
 
-  // --- Audio Logic ---
+  // --- Audio Logic Initialization ---
   useEffect(() => {
     if (audioEnabled) {
       if (!audioCtxRef.current) {
@@ -176,13 +194,50 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({ audioEnabled,
         rainFilter.connect(rainGain);
         rainGain.connect(masterGain);
         rainSrc.start();
+
+        // --- RADIO SYSTEM SETUP ---
+        const radioMaster = ctx.createGain();
+        radioMaster.gain.value = 0;
+        radioMaster.connect(masterGain);
+        radioMasterGainRef.current = radioMaster;
+
+        // Radio Filter (The "Cheap Speaker" sound)
+        const radioFilter = ctx.createBiquadFilter();
+        radioFilter.type = 'bandpass';
+        radioFilter.frequency.value = 1000;
+        radioFilter.Q.value = 1.0;
+        radioFilter.connect(radioMaster);
+        radioFilterRef.current = radioFilter;
+
+        // Static Noise Source
+        const staticBufferSize = ctx.sampleRate;
+        const staticBuffer = ctx.createBuffer(1, staticBufferSize, ctx.sampleRate);
+        const staticData = staticBuffer.getChannelData(0);
+        for(let i=0; i<staticBufferSize; i++) {
+            staticData[i] = Math.random() * 2 - 1;
+        }
+        const staticSrc = ctx.createBufferSource();
+        staticSrc.buffer = staticBuffer;
+        staticSrc.loop = true;
+        
+        const staticGain = ctx.createGain();
+        staticGain.gain.value = 0.5;
+        staticSrc.connect(staticGain);
+        staticGain.connect(radioFilter);
+        staticSrc.start();
+        radioStaticGainRef.current = staticGain;
+
+        // Music Input Gain (Where we attach our procedural synth)
+        const musicGain = ctx.createGain();
+        musicGain.gain.value = 0;
+        musicGain.connect(radioFilter);
+        radioMusicGainRef.current = musicGain;
+
+        startProceduralRadio(ctx, musicGain);
       }
 
-      // Resume context if it was suspended (Autoplay policy)
       if (audioCtxRef.current.state === 'suspended') {
-        audioCtxRef.current.resume().catch(() => {
-          // Ignore initial failure
-        });
+        audioCtxRef.current.resume().catch(() => {});
       }
     } else {
       if (audioCtxRef.current && audioCtxRef.current.state === 'running') {
@@ -191,14 +246,220 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({ audioEnabled,
     }
   }, [audioEnabled]);
 
+  // Handle Radio Volume & Tuning
+  useEffect(() => {
+    if (!audioCtxRef.current || !radioMasterGainRef.current || !radioStaticGainRef.current || !radioMusicGainRef.current) return;
+    
+    // 1. Master On/Off + Volume
+    const masterTarget = radioOn ? radioVol : 0;
+    radioMasterGainRef.current.gain.setTargetAtTime(masterTarget, audioCtxRef.current.currentTime, 0.1);
+
+    // 2. Tuning Logic
+    const stations = [
+        { freq: 96.0, type: 'music', bandwidth: 0.8 },
+        { freq: 104.5, type: 'buzzer', bandwidth: 0.4 } // The buzzer is handled in the procedural loop logic roughly
+    ];
+
+    let bestStationDiff = 100;
+    let closestStation = null;
+
+    stations.forEach(s => {
+        const diff = Math.abs(radioFreq - s.freq);
+        if (diff < bestStationDiff) {
+            bestStationDiff = diff;
+            closestStation = s;
+        }
+    });
+
+    let signalQuality = 0; // 0 = all static, 1 = all music
+    if (closestStation && bestStationDiff < 1.5) {
+        // Linear fade in within 1.5 MHz range
+        signalQuality = 1 - (bestStationDiff / 1.5);
+        signalQuality = Math.max(0, signalQuality);
+        
+        // Add some random dropouts if signal is weak
+        if (signalQuality < 0.8 && Math.random() > 0.9) {
+            signalQuality *= 0.5;
+        }
+    }
+
+    // Static is loud when signal is weak
+    const staticVol = (1.0 - signalQuality) * 0.4 + 0.05; // Always some static
+    const musicVol = signalQuality; // Music volume
+
+    radioStaticGainRef.current.gain.setTargetAtTime(staticVol, audioCtxRef.current.currentTime, 0.1);
+    radioMusicGainRef.current.gain.setTargetAtTime(musicVol, audioCtxRef.current.currentTime, 0.1);
+
+    // Filter frequency shift based on tuning (makes it sound like you are "dialing it in")
+    if (radioFilterRef.current) {
+        // Center at 1000, drift to 400 or 3000 if off-tune
+        const drift = (bestStationDiff * 500) * (Math.random() > 0.5 ? 1 : -1);
+        const targetFreq = 1000 + drift;
+        radioFilterRef.current.frequency.setTargetAtTime(targetFreq, audioCtxRef.current.currentTime, 0.1);
+    }
+
+  }, [radioOn, radioFreq, radioVol, audioEnabled]);
+
   // Handle Rain Volume
   useEffect(() => {
     if (rainGainRef.current && audioCtxRef.current) {
         const t = audioCtxRef.current.currentTime;
         const targetVol = weather === 'rain' ? 0.35 : 0;
-        rainGainRef.current.gain.setTargetAtTime(targetVol, t, 0.5); // Smooth transition
+        rainGainRef.current.gain.setTargetAtTime(targetVol, t, 0.5); 
     }
   }, [weather]);
+
+  // --- Procedural "Soviet Lofi" Generator ---
+  const startProceduralRadio = (ctx: AudioContext, output: GainNode) => {
+      // Scales: A Minor (Natural)
+      const scale = [220.00, 246.94, 261.63, 293.66, 329.63, 349.23, 392.00]; // A3 to G3
+      // Bass notes (A1, F1, C2, G1)
+      const bassProgression = [55.00, 43.65, 65.41, 49.00]; 
+      
+      let step = 0;
+      let bar = 0;
+
+      // Master Compressor for the music
+      const compressor = ctx.createDynamicsCompressor();
+      compressor.threshold.value = -24;
+      compressor.knee.value = 30;
+      compressor.ratio.value = 12;
+      compressor.attack.value = 0.003;
+      compressor.release.value = 0.25;
+      compressor.connect(output);
+
+      // Reverb (Convolver) - Simple impulse
+      const reverbRate = ctx.sampleRate;
+      const reverbLen = reverbRate * 1.5;
+      const impulse = ctx.createBuffer(2, reverbLen, reverbRate);
+      for(let i=0; i<reverbLen; i++) {
+         const decay = Math.pow(1 - i/reverbLen, 3);
+         impulse.getChannelData(0)[i] = (Math.random() * 2 - 1) * decay;
+         impulse.getChannelData(1)[i] = (Math.random() * 2 - 1) * decay;
+      }
+      const reverb = ctx.createConvolver();
+      reverb.buffer = impulse;
+      const reverbMix = ctx.createGain();
+      reverbMix.gain.value = 0.4;
+      reverb.connect(reverbMix);
+      reverbMix.connect(compressor);
+
+      const playNote = (freq: number, type: 'sawtooth' | 'sine' | 'square', dur: number, vol: number, isBass: boolean) => {
+         const osc = ctx.createOscillator();
+         const gain = ctx.createGain();
+         const filter = ctx.createBiquadFilter();
+
+         osc.type = type;
+         osc.frequency.value = freq;
+         
+         // Detune for analog feel
+         osc.detune.value = (Math.random() - 0.5) * 15; 
+
+         filter.type = isBass ? 'lowpass' : 'lowpass';
+         filter.frequency.value = isBass ? 400 : 2000;
+         filter.Q.value = 2;
+
+         osc.connect(filter);
+         filter.connect(gain);
+         gain.connect(compressor); // Dry signal
+         if (!isBass) gain.connect(reverb); // Send lead to reverb
+
+         const t = ctx.currentTime;
+         gain.gain.setValueAtTime(0, t);
+         gain.gain.linearRampToValueAtTime(vol, t + 0.05);
+         gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+
+         osc.start(t);
+         osc.stop(t + dur + 0.1);
+
+         // cleanup
+         setTimeout(() => {
+             osc.disconnect();
+             gain.disconnect();
+         }, (dur + 1) * 1000);
+      };
+
+      const playNoise = (dur: number) => {
+         const bufferSize = ctx.sampleRate * dur;
+         const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+         const data = buffer.getChannelData(0);
+         for (let i = 0; i < bufferSize; i++) {
+            data[i] = Math.random() * 2 - 1;
+         }
+         const src = ctx.createBufferSource();
+         src.buffer = buffer;
+         
+         const filter = ctx.createBiquadFilter();
+         filter.type = 'lowpass';
+         filter.frequency.value = 800;
+         
+         const gain = ctx.createGain();
+         gain.gain.value = 0.15;
+         
+         src.connect(filter);
+         filter.connect(gain);
+         gain.connect(compressor);
+         src.start();
+      };
+
+      // Sequencer Loop (100 BPM approx)
+      const beatTime = 0.6; 
+      
+      sequencerInterval.current = setInterval(() => {
+         if (ctx.state !== 'running') return;
+
+         // Bass: Change every 8 steps (2 bars)
+         if (step % 8 === 0) {
+            const bassNote = bassProgression[(bar % 4)];
+            playNote(bassNote, 'sawtooth', beatTime * 8, 0.3, true);
+         }
+
+         // Melody: Random notes on the scale, sparse
+         if (Math.random() > 0.4) {
+             const note = scale[Math.floor(Math.random() * scale.length)];
+             // Random octave
+             const oct = Math.random() > 0.5 ? 1 : 2;
+             playNote(note * oct, 'square', beatTime, 0.05, false);
+         }
+
+         // Drums: Simple kick/snare
+         if (step % 4 === 0) {
+             // Kick approximation (low sine sweep)
+             const osc = ctx.createOscillator();
+             const g = ctx.createGain();
+             osc.frequency.setValueAtTime(150, ctx.currentTime);
+             osc.frequency.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
+             g.gain.setValueAtTime(0.4, ctx.currentTime);
+             g.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
+             osc.connect(g);
+             g.connect(compressor);
+             osc.start();
+             osc.stop(ctx.currentTime + 0.5);
+         } else if (step % 4 === 2) {
+             // Snare (Noise)
+             playNoise(0.1);
+         }
+
+         // Arpeggio / High Hat
+         if (step % 2 === 0) {
+            playNoise(0.02); // light hat
+         }
+
+         step++;
+         if (step >= 16) {
+             step = 0;
+             bar++;
+         }
+
+      }, beatTime * 1000);
+  };
+
+  // Cleanup Sequencer
+  useEffect(() => {
+      return () => {
+          if (sequencerInterval.current) clearInterval(sequencerInterval.current);
+      };
+  }, []);
 
   // Handle Autoplay Policy
   useEffect(() => {
