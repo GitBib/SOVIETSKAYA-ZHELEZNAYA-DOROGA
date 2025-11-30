@@ -51,6 +51,9 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
   const gaugeNeedlesRef = useRef<THREE.Object3D[]>([]);
   const gaugeMaterialsRef = useRef<THREE.MeshStandardMaterial[]>([]);
 
+  // Building Textures Ref
+  const buildingTexturesRef = useRef<{map: THREE.Texture, emissive: THREE.Texture}[]>([]);
+
   // Speed Logic Refs
   const currentSpeedRef = useRef<number>(60);
   const targetSpeedRef = useRef<number>(60);
@@ -61,7 +64,6 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
   const weatherRef = useRef<Weather>(weather);
 
   // --- Environment Interpolation Targets ---
-  // We store the "Desired" state here, and lerp towards it in the animate loop
   const envTargets = useRef({
       fogColor: new THREE.Color(0x8a96a3),
       fogDensity: 0.02,
@@ -84,7 +86,7 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
     weatherRef.current = weather;
   }, [weather]);
 
-  // --- Environment Reactive Updates (Setting Targets) ---
+  // --- Environment Reactive Updates ---
   useEffect(() => {
     const isNight = timeOfDay === 'night';
     const isRain = weather === 'rain';
@@ -97,7 +99,7 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
     if (isNight) {
         t.fogColor.setHex(0x05070a); // Deep dark night
         if (isSnow) {
-            t.fogColor.setHex(0x1a1c22); // Night Snow (slightly brighter reflection)
+            t.fogColor.setHex(0x1a1c22); // Night Snow
             t.fogDensity = 0.035;
         } else {
             t.fogDensity = isRain ? 0.04 : 0.015;
@@ -119,17 +121,12 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
         }
     }
 
-    // 2. Particle Opacity Targets
     t.rainOpacity = isRain ? 0.6 : 0;
     t.snowOpacity = isSnow ? 0.8 : 0;
-    
-    // 3. Stars Opacity Targets
     t.starOpacity = (isNight && !isRain && !isCloudy && !isSnow) ? 0.8 : 0;
 
-    // 4. Lighting Targets
     const snowBoost = isSnow ? 0.2 : 0;
     t.ambientIntensity = (isNight ? 0.1 : (isRain ? 0.3 : 0.5)) + snowBoost;
-    
     t.dirIntensity = isNight ? 0.1 : (isRain || isSnow ? 0.2 : 0.8);
     t.dirColor.setHex(isNight ? 0x88aaff : (isSnow ? 0xddeeff : 0xffddaa));
 
@@ -138,7 +135,6 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
 
     t.streetLightIntensity = isNight ? 2.0 : 0;
 
-    // 5. Snow Accumulation Targets
     t.snowCapOpacity = isSnow ? 1.0 : 0.0;
     if (isSnow) {
         t.groundColor.setHex(0xdddddd);
@@ -148,10 +144,93 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
         t.groundRoughness = 1.0;
     }
 
-    // 6. Instrument Backlight (On at night OR bad weather)
-    t.instrumentEmission = (isNight || isRain || isCloudy || isSnow) ? 3.0 : 0.0; // Higher intensity for glow
+    t.instrumentEmission = (isNight || isRain || isCloudy || isSnow) ? 3.0 : 0.0; 
 
   }, [timeOfDay, weather]);
+
+  // --- Building Texture Generator ---
+  useEffect(() => {
+    // Generate 3 variations of Panel House textures
+    const generatePanelTexture = (mainColor: string, windowProb: number) => {
+        const size = 512;
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        if(!ctx) return null;
+
+        const eCanvas = document.createElement('canvas');
+        eCanvas.width = size;
+        eCanvas.height = size;
+        const eCtx = eCanvas.getContext('2d');
+        if(!eCtx) return null;
+
+        // Background
+        ctx.fillStyle = mainColor;
+        ctx.fillRect(0,0,size,size);
+        eCtx.fillStyle = '#000000';
+        eCtx.fillRect(0,0,size,size);
+
+        // Grid
+        const rows = 8;
+        const cols = 4;
+        const padX = 10;
+        const padY = 15;
+        const w = (size - (padX * (cols+1))) / cols;
+        const h = (size - (padY * (rows+1))) / rows;
+
+        for(let r=0; r<rows; r++) {
+            for(let c=0; c<cols; c++) {
+                const x = padX + c * (w + padX);
+                const y = padY + r * (h + padY);
+
+                // Window Frame
+                ctx.fillStyle = '#2a2a2a';
+                ctx.fillRect(x,y,w,h);
+
+                // Glass
+                ctx.fillStyle = '#111111';
+                ctx.fillRect(x+2,y+2,w-4,h-4);
+
+                // Lit Window Logic
+                if (Math.random() < windowProb) {
+                    const hue = 30 + Math.random() * 30; // Orange/Yellow
+                    const litColor = `hsl(${hue}, 100%, 50%)`;
+                    eCtx.fillStyle = litColor;
+                    eCtx.fillRect(x+4, y+4, w-8, h-8);
+                    
+                    // Add slight reflection to diffuse map
+                    ctx.fillStyle = '#332200';
+                    ctx.fillRect(x+4, y+4, w-8, h-8);
+                }
+            }
+        }
+        
+        // Concrete Seams
+        ctx.strokeStyle = '#222222';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        for(let i=1; i<rows; i++) {
+            const y = i * (size/rows);
+            ctx.moveTo(0, y);
+            ctx.lineTo(size, y);
+        }
+        ctx.stroke();
+
+        return {
+            map: new THREE.CanvasTexture(canvas),
+            emissive: new THREE.CanvasTexture(eCanvas)
+        };
+    };
+
+    const textures = [
+        generatePanelTexture('#70757a', 0.3),
+        generatePanelTexture('#676d72', 0.5), // More lit windows
+        generatePanelTexture('#7e8380', 0.2)
+    ];
+    // Filter out nulls
+    buildingTexturesRef.current = textures.filter(t => t !== null) as {map: THREE.Texture, emissive: THREE.Texture}[];
+  }, []);
 
   // --- Audio Logic Initialization ---
   useEffect(() => {
@@ -323,13 +402,12 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
 
   }, [radioOn, radioFreq, radioVol, audioEnabled]);
 
-  // Handle Rain Audio Volume (Smooth Ramp)
+  // Handle Rain Audio Volume
   useEffect(() => {
     if (rainGainRef.current && audioCtxRef.current) {
         const t = audioCtxRef.current.currentTime;
-        // Also ramp rain volume if snow is falling but less loud
         const targetVol = weather === 'rain' ? 0.35 : (weather === 'snow' ? 0.05 : 0);
-        rainGainRef.current.gain.setTargetAtTime(targetVol, t, 1.5); // Slower ramp for smoother feel
+        rainGainRef.current.gain.setTargetAtTime(targetVol, t, 1.5);
     }
   }, [weather]);
 
@@ -457,7 +535,6 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
       
       const speedRatio = currentSpeedRef.current / 60; // 1.0 at 60km/h
       if (speedRatio < 0.1) {
-          // Train stopped or very slow, loop check slowly
           timeoutId = setTimeout(playClack, 1000);
           return;
       }
@@ -484,7 +561,6 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
         src.stop(time + 0.15);
       };
       
-      // Volume scales with speed slightly
       const volScale = Math.min(1.0, 0.2 + speedRatio * 0.3);
       createHit(t, 0.4 * volScale);
       createHit(t + 0.14 / speedRatio, 0.3 * volScale);
@@ -510,7 +586,6 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
     const scene = new THREE.Scene();
     sceneRef.current = scene;
     
-    // Initial Fog (using current envTargets)
     scene.fog = new THREE.FogExp2(envTargets.current.fogColor, envTargets.current.fogDensity);
     scene.background = envTargets.current.fogColor.clone();
 
@@ -554,16 +629,16 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
     // Window Frame & Glass
     const windowGroup = new THREE.Group();
     const frameMaterial = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.7, metalness: 0.3 });
-    const frameWidth = 2.4; // Wider to account for pillars
+    const frameWidth = 2.4; 
     const frameHeight = 1.15;
-    const frameThickness = 0.12; // Thicker
+    const frameThickness = 0.12; 
     const frameDepth = 0.1;
     
     const verticalGeo = new THREE.BoxGeometry(frameThickness, frameHeight, frameDepth);
     const horizontalGeo = new THREE.BoxGeometry(frameWidth, 0.08, frameDepth);
     
     const leftFrame = new THREE.Mesh(verticalGeo, frameMaterial);
-    leftFrame.position.set(-frameWidth / 2 + 0.2, 1.2, -0.6); // Moved in slightly
+    leftFrame.position.set(-frameWidth / 2 + 0.2, 1.2, -0.6); 
     
     const rightFrame = leftFrame.clone();
     rightFrame.position.x = frameWidth / 2 - 0.2;
@@ -581,31 +656,26 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
     windowGroup.add(leftFrame, rightFrame, topFrame);
     interior.add(windowGroup);
 
-    // --- Cabin Dashboard & Ceiling (Restricting View) ---
-    
-    // Dashboard (Bottom console)
-    // LOWERED dashboard slightly more to 0.4 (Top at 0.85) to ensure gauges sit cleanly
+    // Dashboard
     const dashboardGeo = new THREE.BoxGeometry(4, 0.9, 0.8);
     const dashboardMat = new THREE.MeshStandardMaterial({ color: 0x181a1b, roughness: 0.7, metalness: 0.4 });
     const dashboard = new THREE.Mesh(dashboardGeo, dashboardMat);
-    // Positioned lower: height 0.9, y at 0.40 means top is at 0.85
     dashboard.position.set(0, 0.40, -0.5); 
     interior.add(dashboard);
 
-    // Ceiling (Top visor)
+    // Ceiling
     const ceilingGeo = new THREE.BoxGeometry(4, 0.5, 1.5);
     const ceilingMat = new THREE.MeshStandardMaterial({ color: 0x222426, roughness: 0.9 });
     const ceiling = new THREE.Mesh(ceilingGeo, ceilingMat);
-    // Positioned to block top edge
     ceiling.position.set(0, 2.0, -0.4); 
     interior.add(ceiling);
 
-    // --- Instruments / Gauges ---
+    // --- Instruments ---
     gaugeNeedlesRef.current = [];
     gaugeMaterialsRef.current = [];
 
     function createGaugeTexture(label: string, min: number, max: number, steps: number, hasRedZone: boolean) {
-        const size = 512; // Increased resolution
+        const size = 512;
         const canvas = document.createElement('canvas');
         canvas.width = size;
         canvas.height = size;
@@ -616,41 +686,35 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
         const cy = size / 2;
         const radius = size / 2 - 10;
 
-        // Background (Subtle radial gradient for realism)
         const grad = ctx.createRadialGradient(cx, cy, radius * 0.5, cx, cy, radius);
         grad.addColorStop(0, '#1a1a1a');
         grad.addColorStop(1, '#000000');
         ctx.fillStyle = grad;
         ctx.fillRect(0, 0, size, size);
 
-        // Rim
         ctx.beginPath();
         ctx.arc(cx, cy, radius - 5, 0, Math.PI * 2);
         ctx.strokeStyle = '#333';
         ctx.lineWidth = 10;
         ctx.stroke();
 
-        // Safe/Red Zones
         const startAngle = Math.PI * 0.75;
         const totalAngle = Math.PI * 1.5;
         
-        // Draw Scale Arc
         ctx.beginPath();
         ctx.arc(cx, cy, radius - 40, startAngle, startAngle + totalAngle);
         ctx.strokeStyle = '#cccccc';
         ctx.lineWidth = 4;
         ctx.stroke();
 
-        // Red Zone (Last 20%)
         if (hasRedZone) {
             ctx.beginPath();
             ctx.arc(cx, cy, radius - 40, startAngle + totalAngle * 0.8, startAngle + totalAngle);
             ctx.strokeStyle = '#cc0000';
-            ctx.lineWidth = 12; // Thicker zone
+            ctx.lineWidth = 12; 
             ctx.stroke();
         }
 
-        // Ticks & Numbers
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         
@@ -674,7 +738,6 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
             ctx.lineWidth = isMajor ? 8 : 4;
             ctx.stroke();
 
-            // Numbers
             if (isMajor) {
                  const tx = cx + Math.cos(angle) * (radius - 100);
                  const ty = cy + Math.sin(angle) * (radius - 100);
@@ -686,7 +749,6 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
             }
         }
         
-        // Label
         ctx.fillStyle = '#aaaaaa';
         ctx.font = 'bold 36px monospace';
         ctx.fillText(label, cx, cy + 80);
@@ -696,39 +758,33 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
 
     function createGauge(x: number, label: string, range: [number, number], hasRedZone = false, steps = 10) {
         const group = new THREE.Group();
-        // Positioned on the dashboard surface (approx y=0.92 based on dashboard top)
-        // Moved down and angled up for better visibility
         group.position.set(x, 0.92, -0.45); 
-        group.rotation.x = -Math.PI / 4; // Angled 45 deg up
+        group.rotation.x = -Math.PI / 4; 
 
-        // Housing
         const housingGeo = new THREE.CylinderGeometry(0.12, 0.12, 0.05, 32);
         const housingMat = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.6, roughness: 0.4 });
         const housing = new THREE.Mesh(housingGeo, housingMat);
         housing.rotation.x = Math.PI / 2;
         group.add(housing);
 
-        // Face
         const tex = createGaugeTexture(label, range[0], range[1], steps, hasRedZone);
         const faceGeo = new THREE.CircleGeometry(0.10, 32);
         const faceMat = new THREE.MeshStandardMaterial({ 
             map: tex, 
             color: 0xffffff,
-            emissive: 0x33ff33, // Radioactive Green
-            emissiveMap: tex,   // Only the white parts of texture will emit light
+            emissive: 0x33ff33, 
+            emissiveMap: tex,
             emissiveIntensity: 0,
             roughness: 0.5,
-            metalness: 0.1      // Reduced metalness for better visibility
+            metalness: 0.1 
         });
         const face = new THREE.Mesh(faceGeo, faceMat);
         face.position.z = 0.026;
         gaugeMaterialsRef.current.push(faceMat);
         group.add(face);
 
-        // Needle
         const needleGroup = new THREE.Group();
-        needleGroup.position.z = 0.04; // Push needle out slightly more
-        // Needle geometry: pivot at one end
+        needleGroup.position.z = 0.04; 
         const needleGeo = new THREE.BufferGeometry();
         const vertices = new Float32Array([
              0, -0.01, 0,
@@ -743,10 +799,9 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
 
         const needleMat = new THREE.MeshBasicMaterial({ color: 0xff3300 });
         const needle = new THREE.Mesh(needleGeo, needleMat);
-        needle.rotation.z = 0; // Reset
+        needle.rotation.z = 0; 
         needleGroup.add(needle);
         
-        // Needle Cap
         const capGeo = new THREE.CylinderGeometry(0.01, 0.01, 0.01, 16);
         const capMat = new THREE.MeshBasicMaterial({ color: 0x111111 });
         const cap = new THREE.Mesh(capGeo, capMat);
@@ -756,7 +811,6 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
         gaugeNeedlesRef.current.push(needleGroup);
         group.add(needleGroup);
 
-        // Glass cover
         const coverGeo = new THREE.CircleGeometry(0.11, 32);
         const coverMat = new THREE.MeshStandardMaterial({ 
             color: 0xffffff, transparent: true, opacity: 0.15, roughness: 0.1, metalness: 0.9 
@@ -768,16 +822,14 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
         interior.add(group);
     }
 
-    // Add Gauges with Red Zones
-    // Speedometer: use 12 steps so we get 120/12 = 10 per step, Major every 2 = 20km/h increments (0, 20, 40...)
     createGauge(-0.4, "KM/H", [0, 120], true, 12); 
-    createGauge(0, "ATM", [0, 10], true, 10);      // Pressure
-    createGauge(0.4, "V", [0, 250], false, 10);     // Voltage
+    createGauge(0, "ATM", [0, 10], true, 10);      
+    createGauge(0.4, "V", [0, 250], false, 10);     
 
     // Wiper
     const wiperGroup = new THREE.Group();
     wiperGroup.position.set(0, 1.2 - frameHeight/2 + 0.1, -0.62); 
-    const wiperArmGeo = new THREE.BoxGeometry(0.02, 0.7, 0.02); // Slightly shorter
+    const wiperArmGeo = new THREE.BoxGeometry(0.02, 0.7, 0.02); 
     const wiperMat = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.8, roughness: 0.2 });
     const wiperArm = new THREE.Mesh(wiperArmGeo, wiperMat);
     wiperArm.position.y = 0.35;
@@ -859,7 +911,6 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
     const groundGeo = new THREE.PlaneGeometry(200, 120);
     const groundMat = new THREE.MeshStandardMaterial({ color: 0x383a38, roughness: 1.0 });
     const ground = new THREE.Mesh(groundGeo, groundMat);
-    ground.name = 'ground';
     ground.rotation.x = -Math.PI / 2;
     ground.position.set(0, -0.1, -60);
     world.add(ground);
@@ -883,21 +934,18 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
     streetLightsRef.current = [];
     peopleRef.current = [];
     activeSignsRef.current = [];
-    snowCapsRef.current = []; // Reset snow caps list
+    snowCapsRef.current = [];
 
-    const panelColors = [0x70757a, 0x676d72, 0x585c60, 0x6c6f77, 0x7e8380];
     const graffitiColors = [0x884444, 0x448844, 0x444488, 0xccccaa, 0x222222];
 
     function createSpeedLimitSign(limit: number, z: number) {
         const group = new THREE.Group();
-        // Pole
         const poleGeo = new THREE.CylinderGeometry(0.05, 0.05, 3, 8);
         const poleMat = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.6 });
         const pole = new THREE.Mesh(poleGeo, poleMat);
         pole.position.y = 1.5;
         group.add(pole);
 
-        // Sign Face (Canvas Texture)
         const size = 128;
         const canvas = document.createElement('canvas');
         canvas.width = size;
@@ -925,13 +973,12 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
             color: 0xffffff,
             roughness: 0.5,
             emissive: 0xffffff,
-            emissiveIntensity: 0.1 // Slight glow to be visible at night
+            emissiveIntensity: 0.1 
         });
         const sign = new THREE.Mesh(signGeo, signMat);
         sign.position.set(0, 2.5, 0.06);
         group.add(sign);
 
-        // Back of sign
         const backGeo = new THREE.CircleGeometry(0.4, 32);
         const backMat = new THREE.MeshStandardMaterial({ color: 0x555555 });
         const back = new THREE.Mesh(backGeo, backMat);
@@ -939,8 +986,8 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
         back.rotation.y = Math.PI;
         group.add(back);
 
-        group.position.set(2.5, 0, z); // Always on right side
-        group.rotation.y = -Math.PI / 8; // Angled slightly towards track
+        group.position.set(2.5, 0, z); 
+        group.rotation.y = -Math.PI / 8; 
         
         world.add(group);
         movingObjects.push(group);
@@ -949,18 +996,57 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
 
     function createPanelHouse(x: number, z: number) {
       const group = new THREE.Group();
-      const width = 1.2 + Math.random() * 1.5;
-      const height = 2.0 + Math.random() * 2.5;
-      const depth = 0.8 + Math.random() * 0.8;
+      const width = 1.5 + Math.random() * 2.5;
+      const height = 2.5 + Math.random() * 3.5;
+      const depth = 1.0 + Math.random() * 1.0;
       
       const geo = new THREE.BoxGeometry(width, height, depth);
-      const color = panelColors[Math.floor(Math.random() * panelColors.length)];
-      const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.9, metalness: 0.1 });
+      
+      // Use procedural texture if available
+      let mat: THREE.MeshStandardMaterial;
+      if (buildingTexturesRef.current.length > 0) {
+          const texSet = buildingTexturesRef.current[Math.floor(Math.random() * buildingTexturesRef.current.length)];
+          mat = new THREE.MeshStandardMaterial({ 
+              map: texSet.map,
+              emissiveMap: texSet.emissive,
+              emissive: 0xffffff,
+              emissiveIntensity: 1.0, // Control via light later?
+              roughness: 0.9, 
+              metalness: 0.1 
+          });
+      } else {
+          mat = new THREE.MeshStandardMaterial({ color: 0x70757a, roughness: 0.9 });
+      }
+
       const mesh = new THREE.Mesh(geo, mat);
       mesh.position.y = height / 2;
       group.add(mesh);
 
-      // Snow Cap (Transparent for fading)
+      // Balconies / Protrusions
+      const numBalconies = Math.floor(Math.random() * 4);
+      for(let k=0; k<numBalconies; k++) {
+          const bW = 0.4 + Math.random() * 0.4;
+          const bH = 0.2 + Math.random() * 0.2;
+          const bD = 0.2;
+          const bGeo = new THREE.BoxGeometry(bW, bH, bD);
+          const bMat = new THREE.MeshStandardMaterial({ color: 0x555555 });
+          const balcony = new THREE.Mesh(bGeo, bMat);
+          
+          const side = x > 0 ? -1 : 1;
+          balcony.position.set(
+              (width/2 * side) + (side * bD/2), // Stick out side or front? Front looks better for side view
+              Math.random() * (height * 0.7) + 0.5,
+              (Math.random() - 0.5) * depth * 0.8
+          );
+          if (Math.random() > 0.5) {
+               // Move to front face
+               balcony.position.x = (Math.random() - 0.5) * width * 0.8;
+               balcony.position.z = depth/2 + bD/2;
+          }
+          group.add(balcony);
+      }
+
+      // Snow Cap
       const capGeo = new THREE.BoxGeometry(width + 0.1, 0.05, depth + 0.1);
       const capMat = new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 1, transparent: true, opacity: 0 });
       const cap = new THREE.Mesh(capGeo, capMat);
@@ -968,19 +1054,6 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
       snowCapsRef.current.push(cap);
       group.add(cap);
 
-      const numPatches = Math.floor(Math.random() * 4);
-      for(let k=0; k<numPatches; k++) {
-         const pWidth = 0.3 + Math.random() * 0.4;
-         const pHeight = 0.3 + Math.random() * 0.4;
-         const pGeo = new THREE.PlaneGeometry(pWidth, pHeight);
-         const pColor = graffitiColors[Math.floor(Math.random() * graffitiColors.length)];
-         const pMat = new THREE.MeshBasicMaterial({ color: pColor, transparent: true, opacity: 0.6 });
-         const patch = new THREE.Mesh(pGeo, pMat);
-         const side = x > 0 ? -1 : 1; 
-         patch.position.set((width/2 * side) + (side * 0.01), Math.random() * (height * 0.8) + 0.5, (Math.random() - 0.5) * depth * 0.8);
-         patch.rotation.y = side === 1 ? Math.PI / 2 : -Math.PI / 2;
-         group.add(patch);
-      }
       group.position.set(x, 0, z);
       world.add(group);
       movingObjects.push(group);
@@ -988,15 +1061,26 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
 
     function createFactory(x: number, z: number) {
       const group = new THREE.Group();
-      const baseWidth = 2.5 + Math.random() * 2.0;
-      const baseHeight = 1.2 + Math.random() * 0.8;
-      const baseGeo = new THREE.BoxGeometry(baseWidth, baseHeight, 2.0);
+      const baseWidth = 3.0 + Math.random() * 2.0;
+      const baseHeight = 1.5 + Math.random() * 1.0;
+      const baseGeo = new THREE.BoxGeometry(baseWidth, baseHeight, 2.5);
       const baseMat = new THREE.MeshStandardMaterial({ color: 0x4a4d4f, roughness: 0.95 });
       const base = new THREE.Mesh(baseGeo, baseMat);
       base.position.y = baseHeight / 2;
       group.add(base);
 
-      const capGeo = new THREE.BoxGeometry(baseWidth + 0.1, 0.05, 2.1);
+      // Roof details (Skylights)
+      const roofDetailCount = 3;
+      for(let i=0; i<roofDetailCount; i++) {
+          const rGeo = new THREE.ConeGeometry(0.4, 0.4, 4);
+          const rMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+          const rMesh = new THREE.Mesh(rGeo, rMat);
+          rMesh.position.set((Math.random() - 0.5) * baseWidth * 0.8, baseHeight + 0.2, (Math.random() - 0.5) * 1.5);
+          rMesh.rotation.y = Math.PI / 4;
+          group.add(rMesh);
+      }
+
+      const capGeo = new THREE.BoxGeometry(baseWidth + 0.1, 0.05, 2.6);
       const capMat = new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 1, transparent: true, opacity: 0 });
       const cap = new THREE.Mesh(capGeo, capMat);
       cap.position.y = baseHeight + 0.025;
@@ -1073,7 +1157,6 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
         const crown = new THREE.Mesh(crownGeo, crownMat);
         crown.position.set(x, height * 0.9, z);
         
-        // Snow Cap on Tree
         const capGeo = new THREE.IcosahedronGeometry(Math.random() * 0.5 + 0.35, 0);
         const capMat = new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 1, transparent: true, opacity: 0 });
         const cap = new THREE.Mesh(capGeo, capMat);
@@ -1162,12 +1245,10 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
       const delta = clock.getDelta();
       const t = clock.getElapsedTime();
 
-      // --- Smooth Transition Logic ---
-      const lerpSpeed = delta * 1.5; // Controls transition speed
+      const lerpSpeed = delta * 1.5; 
       const targets = envTargets.current;
 
       if (sceneRef.current) {
-          // Fog & Background
           if (sceneRef.current.fog instanceof THREE.FogExp2) {
              sceneRef.current.fog.color.lerp(targets.fogColor, lerpSpeed);
              sceneRef.current.fog.density = THREE.MathUtils.lerp(sceneRef.current.fog.density, targets.fogDensity, lerpSpeed);
@@ -1176,29 +1257,24 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
              }
           }
 
-          // Ambient Light
           if (ambientLightRef.current) {
               ambientLightRef.current.intensity = THREE.MathUtils.lerp(ambientLightRef.current.intensity, targets.ambientIntensity, lerpSpeed);
           }
 
-          // Directional Light
           if (dirLightRef.current) {
               dirLightRef.current.intensity = THREE.MathUtils.lerp(dirLightRef.current.intensity, targets.dirIntensity, lerpSpeed);
               dirLightRef.current.color.lerp(targets.dirColor, lerpSpeed);
           }
 
-          // Interior Light
           if (interiorLightRef.current) {
               interiorLightRef.current.intensity = THREE.MathUtils.lerp(interiorLightRef.current.intensity, targets.interiorIntensity, lerpSpeed);
               interiorLightRef.current.color.lerp(targets.interiorColor, lerpSpeed);
           }
 
-          // Street Lights
           streetLightsRef.current.forEach(light => {
               light.intensity = THREE.MathUtils.lerp(light.intensity, targets.streetLightIntensity, lerpSpeed);
           });
 
-          // Particles Opacity
           if (rainSystemRef.current && rainSystemRef.current.material instanceof THREE.PointsMaterial) {
               const currentOp = rainSystemRef.current.material.opacity;
               rainSystemRef.current.material.opacity = THREE.MathUtils.lerp(currentOp, targets.rainOpacity, lerpSpeed);
@@ -1212,73 +1288,52 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
               starsRef.current.material.opacity = THREE.MathUtils.lerp(currentOp, targets.starOpacity, lerpSpeed);
           }
 
-          // Ground Transition
           if (groundRef.current && groundRef.current.material instanceof THREE.MeshStandardMaterial) {
               groundRef.current.material.color.lerp(targets.groundColor, lerpSpeed);
               groundRef.current.material.roughness = THREE.MathUtils.lerp(groundRef.current.material.roughness, targets.groundRoughness, lerpSpeed);
           }
 
-          // Snow Caps Fade
           snowCapsRef.current.forEach(cap => {
              if (cap.material instanceof THREE.MeshStandardMaterial) {
                  cap.material.opacity = THREE.MathUtils.lerp(cap.material.opacity, targets.snowCapOpacity, lerpSpeed);
              } 
           });
 
-          // Instrument Backlight
           gaugeMaterialsRef.current.forEach(mat => {
               mat.emissiveIntensity = THREE.MathUtils.lerp(mat.emissiveIntensity, targets.instrumentEmission, lerpSpeed);
           });
       }
 
       // --- SPEED & SIGN LOGIC ---
-      
-      // 1. Detect passed signs to update Target Speed
       activeSignsRef.current.forEach(signData => {
           if (!signData.passed && signData.mesh.position.z > 0.8) {
-              // Sign has passed the camera (camera is at 0.8z)
               signData.passed = true;
               targetSpeedRef.current = signData.limit;
           }
       });
-      // Cleanup passed signs from the checker array if they wrapped around (simple logic handles wrap below)
       activeSignsRef.current = activeSignsRef.current.filter(s => s.mesh.position.z < frontLimit); 
 
-      // 2. Train Inertia (Move Current Speed towards Target Speed)
-      // It takes time to accelerate/decelerate
-      const inertia = 0.5 * delta; // Acceleration rate
+      const inertia = 0.5 * delta; 
       if (currentSpeedRef.current < targetSpeedRef.current) {
-          currentSpeedRef.current = Math.min(targetSpeedRef.current, currentSpeedRef.current + inertia * 5); // Accelerate
+          currentSpeedRef.current = Math.min(targetSpeedRef.current, currentSpeedRef.current + inertia * 5); 
       } else if (currentSpeedRef.current > targetSpeedRef.current) {
-          currentSpeedRef.current = Math.max(targetSpeedRef.current, currentSpeedRef.current - inertia * 2); // Decelerate slower (braking)
+          currentSpeedRef.current = Math.max(targetSpeedRef.current, currentSpeedRef.current - inertia * 2); 
       }
 
-      // 3. Generate New Signs (Every 20-40 seconds)
       if (t > nextSignTimeRef.current) {
           const limits = [40, 60, 80, 100, 120];
           const newLimit = limits[Math.floor(Math.random() * limits.length)];
-          // Spawn at the back of the queue (approx -160 z)
           createSpeedLimitSign(newLimit, -150);
           nextSignTimeRef.current = t + 20 + Math.random() * 20; 
       }
 
-      // --- Physics & Object Movement ---
-      // Move speed is proportional to train speed. 
-      // 60km/h is roughly 16m/s. In ThreeJS units here, let's say 1 unit = 1 meter approx.
-      // So 60km/h = 16.6 units/sec. 
       const worldMoveDist = (currentSpeedRef.current * 0.28) * delta; 
       
       for (const obj of movingObjects) {
         obj.position.z += worldMoveDist;
         if (obj.position.z > frontLimit) {
           obj.position.z -= wrapDistance;
-          // Respawn logic for scenery, but KEEP signs in their slot or remove them? 
-          // Current logic wraps everything. If a sign wraps, it becomes a "ghost" sign from behind.
-          // To keep it simple: random scatter lateral position on wrap for scenery, remove signs.
           
-          // Check if it is a sign (has a specific structure or userData could be used)
-          // Since we stored signs in movingObjects, they will wrap. 
-          // Let's repurpose the object if it's NOT a sign.
           const isSign = activeSignsRef.current.some(s => s.mesh === obj) || obj.children.some(c => c instanceof THREE.Mesh && (c.geometry instanceof THREE.CircleGeometry));
           
           if (!isSign) {
@@ -1287,15 +1342,11 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
                 obj.position.x = side * (6 + Math.random() * 8); 
               }
           } else {
-             // If it IS a sign and it wrapped, we should technically remove it or hide it, 
-             // because signs are spawned via the timer logic.
-             // For simplicity in this loop, we just push it way back or hide it.
-             obj.position.y = -100; // Hide underground
+             obj.position.y = -100; 
           }
         }
       }
 
-      // Animate Rain
       if (rainSystemRef.current) {
           const positions = rainSystemRef.current.geometry.attributes.position.array as Float32Array;
           for(let i=0; i<rainCount; i++) {
@@ -1309,7 +1360,6 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
           rainSystemRef.current.geometry.attributes.position.needsUpdate = true;
       }
 
-      // Animate Snow
       if (snowSystemRef.current) {
           const positions = snowSystemRef.current.geometry.attributes.position.array as Float32Array;
           for(let i=0; i<snowCount; i++) {
@@ -1324,7 +1374,6 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
           snowSystemRef.current.geometry.attributes.position.needsUpdate = true;
       }
 
-      // Animate People
       peopleRef.current.forEach((person, idx) => {
           const shiver = Math.sin(t * 10 + idx) * 0.005;
           const breathe = Math.sin(t * 2 + idx) * 0.02;
@@ -1332,7 +1381,6 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
           person.rotation.z = Math.sin(t + idx) * 0.05;
       });
 
-      // Animate Wiper
       if (wiperPivotRef.current) {
         if (weatherRef.current === 'rain') {
             const wipeSpeed = 3.5; 
@@ -1344,33 +1392,24 @@ const PostSovietTrainView: React.FC<PostSovietTrainViewProps> = ({
         }
       }
 
-      // Animate Gauges
       if (gaugeNeedlesRef.current.length >= 3) {
-          // Speedometer Logic
-          // Ensure ratio is strictly between 0 and 1 to prevent "over-twisting"
           const speedRatio = Math.max(0, Math.min(1, currentSpeedRef.current / 120)); 
-          
-          const startAngle = Math.PI * 0.75; // Matches Bottom Left
-          const totalAngle = Math.PI * 1.5;  // Matches Range
+          const startAngle = Math.PI * 0.75; 
+          const totalAngle = Math.PI * 1.5;  
           const currentAngle = startAngle - (speedRatio * totalAngle);
-
-          // Vibration increases with speed
           const vibrationAmp = 0.005 + (speedRatio * 0.05); 
           const speedJitter = (Math.sin(t * 25) + Math.cos(t * 40)) * vibrationAmp;
           
           gaugeNeedlesRef.current[0].rotation.z = currentAngle + speedJitter;
           
-          // Pressure: Slow drift
           const pressure = Math.sin(t * 0.2) * 0.1 + 0.5;
           gaugeNeedlesRef.current[1].rotation.z = (Math.PI * 1.25) - (pressure * (Math.PI * 1.5));
 
-          // Voltage: Jitter
           const volts = 0.8 + (Math.random() - 0.5) * 0.05;
           gaugeNeedlesRef.current[2].rotation.z = (Math.PI * 1.25) - (volts * (Math.PI * 1.5));
       }
 
-      // Camera Shake Intensity based on Speed
-      const shakeScalar = currentSpeedRef.current / 60; // 1.0 at normal speed
+      const shakeScalar = currentSpeedRef.current / 60; 
       const shakeX = (Math.sin(t * 20) * 0.002 + Math.sin(t * 50) * 0.002) * shakeScalar;
       const shakeY = (Math.cos(t * 18) * 0.003) * shakeScalar;
       const sway = Math.sin(t * 1.5) * 0.02;
